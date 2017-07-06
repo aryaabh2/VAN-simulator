@@ -42,6 +42,7 @@ typedef struct threadInputArgs{
     struct sockaddr_ll packetInfo;
     int packetInfoSize;
     int length;
+    char intf_mac_addr[ETH_ALEN];
 }inputArgs;
 
 
@@ -59,8 +60,31 @@ void printFlows(address *flows);
 // Sending thread function
 static void *sendingPacket(void *args);
 
+static int getMACAddress(char *ifname, char *mac_addr) {
+    struct ifreq s;
+    char buf[255 + 1 /*for null termination*/] = {0};
+    char *p = buf;
+    int num_chars = 0;
 
-int main(void){
+    int fd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW);
+
+    strcpy(s.ifr_name, ifname);
+    if (0 == ioctl(fd, SIOCGIFHWADDR, &s)) {
+        int i;
+        p += num_chars;
+        for (i = 0; i < ETH_ALEN; ++i) {
+            num_chars = snprintf(p, 255, "%02x:", (unsigned char) s.ifr_addr.sa_data[i]);
+            p += num_chars;
+        }
+        printf("MAC address of %s: %s\n", ifname, buf);
+        memcpy(mac_addr, s.ifr_addr.sa_data, 6);
+        return 0;
+    }
+    return 1;
+
+}
+
+int main(int argc, char *argv[]){
     
     pthread_t sendPacketThread;    
     
@@ -88,13 +112,23 @@ int main(void){
     flows[0].destIP[0] = '\0';
     flows[0].sourceIP[0] = '\0'; 
     
-    
+    char intf_to_sniff[IFNAMSIZ + 1] = {0};
+
+    /* default interface to snoop is eth0 */
+    snprintf(intf_to_sniff, IFNAMSIZ, "%s", "eth0");
+    if (argc == 2) {
+        snprintf(intf_to_sniff, IFNAMSIZ, "%s", argv[1]);
+    }
+
     // Creating Raw Socket
     printf("Creating Raw socket\n");
-    rawSocket = createRawSocket(ETH_P_IP);
-      
+    char mac_addr[ETH_ALEN];
+
+    rawSocket = createRawSocket(ETH_P_ALL);
+    getMACAddress(intf_to_sniff, mac_addr);
+
     // Binding to interface
-    bindRawSocketToInterface("eth0", rawSocket, ETH_P_IP);
+    bindRawSocketToInterface(intf_to_sniff, rawSocket, ETH_P_ALL);
     
     // Start Sniffing
     struct timespec startTime, runTime, currentTime;
@@ -146,11 +180,12 @@ int main(void){
         
            
         inputArgs arguments;
-            arguments.packetBuffer = packetBuffer;
-            arguments.rawSocket = rawSocket;
-            arguments.packetInfo = packetInfo;
-            arguments.packetInfoSize = packetInfoSize;
-            arguments.length = length; 
+        arguments.packetBuffer = packetBuffer;
+        arguments.rawSocket = rawSocket;
+        arguments.packetInfo = packetInfo;
+        arguments.packetInfoSize = packetInfoSize;
+        arguments.length = length; 
+        memcpy(arguments.intf_mac_addr, mac_addr, ETH_ALEN);
             
         pthread_create(&sendPacketThread, NULL, sendingPacket, (void*)&arguments);
                    
@@ -201,9 +236,10 @@ int bindRawSocketToInterface(const char *device, int rawSocket, int protocol){
     }
     else{
         printf("Interface name = %c%c%c%c\n", ifr.ifr_name[0],ifr.ifr_name[1],ifr.ifr_name[2],ifr.ifr_name[3]);
- 
+
+        memset(&sll, 0, sizeof(struct sockaddr_ll));
         sll.sll_family = AF_PACKET;
-        sll.sll_ifindex = ifr.ifr_ifindex;
+        sll.sll_ifindex = if_nametoindex(device);
         sll.sll_protocol = htons(protocol);
         
         bind(rawSocket, (struct sockaddr *)&sll, sizeof(sll));
@@ -381,13 +417,29 @@ static void *sendingPacket(void *args){
     
     printf("\n Reached this point\n");
     inputArgs *arguments = (inputArgs *)args;
-   
-    int len = sendto((*arguments).rawSocket, &(*arguments).packetBuffer, (*arguments).length, 0, (struct sockaddr *)&(*arguments).packetInfo, (*arguments).packetInfoSize);
-    
-    if(len == -1){
-        printf("\n packet NOT sent\n\n %d \n", errno);
+    struct ethhdr *eth = (struct ethhdr *)(arguments->packetBuffer);
+
+    /* check if the Source MAC in the packet is the same as the MAC address of the interface;
+     * this means, this packet can be sent out. On the other hand, if the MAC address of the
+     * interface matches thes Dest MAC of the packet, then this is an incoming packet and cannot
+     * be sent out
+     */
+    if (memcmp(eth->h_source, arguments->intf_mac_addr, ETH_ALEN) == 0) {
+        memset(&arguments->packetInfo, 0, sizeof(struct sockaddr_ll));
+        arguments->packetInfo.sll_family = AF_PACKET;
+        arguments->packetInfo.sll_ifindex = if_nametoindex("eth1");
+        arguments->packetInfo.sll_halen = ETH_ALEN;
+        memcpy(arguments->packetInfo.sll_addr, eth->h_source, ETH_ALEN);
+        int len = sendto((*arguments).rawSocket, &(*arguments).packetBuffer,
+                         (*arguments).length, 0, 
+                         (struct sockaddr *)&(*arguments).packetInfo,
+                         sizeof(struct sockaddr_ll));
+        
+        if(len == -1){
+            printf("\n packet NOT sent\n\n %d \n", errno);
+        } else {
+            printf("\n Packet sent :) \n");
+        }
     }
-    else
-        printf("\n Packet sent :) \n");  
 }
 

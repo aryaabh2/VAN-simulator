@@ -41,7 +41,8 @@ int main(void){
     printf("managed to exit bind function if 1 = %d\n",a);
     
     // Start Sniffing
-    for(int i = 0; i < numPacketsToSniff ; i++){
+    int i = 0;
+    for(i = 0; i < numPacketsToSniff ; i++){
         
         printf("Printing packet: %d\n", i+1);
         length = recvfrom(rawSocket, packetBuffer, 2048, 0,(struct sockaddr*)&packetInfo, &packetInfoSize);
@@ -117,7 +118,8 @@ void printPacketInHex( int length, unsigned char *p){
     
     printf("\n\n _________ PACKET___START ________\n\n");
     
-    for(int i = 0; i < length; i++){
+    int i = 0;
+    for(i = 0; i < length; i++){
         printf("%x ", *p);
         p++;
     }
